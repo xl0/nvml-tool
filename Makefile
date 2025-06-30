@@ -1,6 +1,6 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -std=c99 -O2
-LDFLAGS = -lnvidia-ml
+CFLAGS = -Wall -Wextra -std=c99 -O2 -I/usr/local/cuda-12.9/targets/x86_64-linux/include
+LDFLAGS = -L/usr/local/cuda-12.9/targets/x86_64-linux/lib -lnvidia-ml
 
 TARGET = nvml-tool
 SOURCES = main.c
