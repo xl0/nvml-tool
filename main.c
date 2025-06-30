@@ -3,18 +3,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <getopt.h>
-#include </usr/local/cuda-12.9/targets/x86_64-linux/include/nvml.h>
+#include <nvml.h>
 #include <ctype.h>
 
 #define MAX_DEVICES 64
 #define MAX_NAME_LEN 256
 #define MAX_UUID_LEN 80
 
-typedef enum {
-    TEMP_CELSIUS,
-    TEMP_FAHRENHEIT,
-    TEMP_KELVIN
-} temp_unit_t;
 
 typedef enum {
     CMD_NONE,
@@ -42,11 +37,11 @@ typedef struct {
     command_t command;
     subcommand_t subcommand;
     unsigned int set_value;
-    temp_unit_t temp_unit;
+    char temp_unit;
 } cli_args_t;
 
-static void print_usage(const char* program_name) {
-    printf("Usage: %s <command> [subcommand] [options] [args]\n", program_name);
+static void print_usage(const char* name) {
+    printf("Usage: %s <command> [subcommand] [options] [args]\n", name);
     printf("\nCommands:\n");
     printf("  info [json]         Show comprehensive device information\n");
     printf("  power [set VALUE]   Show/set power usage and limits\n");
@@ -63,34 +58,26 @@ static void print_usage(const char* program_name) {
     printf("  --temp-unit UNIT    Temperature unit: C, F, K (default: C)\n");
     printf("  -h, --help          Show this help\n");
     printf("\nExamples:\n");
-    printf("  %s info                    # Show info for all devices\n", program_name);
-    printf("  %s info -d 0              # Show info for device 0\n", program_name);
-    printf("  %s power -d 0-2           # Show power for devices 0,1,2\n", program_name);
-    printf("  %s power set 250 -d 1     # Set 250W limit on device 1\n", program_name);
-    printf("  %s fan                    # Show fan speeds for all devices\n", program_name);
-    printf("  %s fan set 80 -d 1        # Set 80%% fan speed on device 1\n", program_name);
-    printf("  %s fan restore            # Restore automatic control\n", program_name);
-    printf("  %s info json              # JSON info for all devices\n", program_name);
+    printf("  %s info                    # Show info for all devices\n", name);
+    printf("  %s info -d 0              # Show info for device 0\n", name);
+    printf("  %s power -d 0-2           # Show power for devices 0,1,2\n", name);
+    printf("  %s power set 250 -d 1     # Set 250W limit on device 1\n", name);
+    printf("  %s fan                    # Show fan speeds for all devices\n", name);
+    printf("  %s fan set 80 -d 1        # Set 80%% fan speed on device 1\n", name);
+    printf("  %s fan restore            # Restore automatic control\n", name);
+    printf("  %s info json              # JSON info for all devices\n", name);
 }
 
 
-static double convert_temperature(unsigned int temp_c, temp_unit_t unit) {
+static double convert_temperature(unsigned int temp_c, char unit) {
     switch (unit) {
-        case TEMP_CELSIUS: return temp_c;
-        case TEMP_FAHRENHEIT: return (temp_c * 9.0 / 5.0) + 32.0;
-        case TEMP_KELVIN: return temp_c + 273.15;
+        case 'C': return temp_c;
+        case 'F': return (temp_c * 9.0 / 5.0) + 32.0;
+        case 'K': return temp_c + 273.15;
         default: return temp_c;
     }
 }
 
-static const char* temp_unit_string(temp_unit_t unit) {
-    switch (unit) {
-        case TEMP_CELSIUS: return "C";
-        case TEMP_FAHRENHEIT: return "F";
-        case TEMP_KELVIN: return "K";
-        default: return "C";
-    }
-}
 
 static int parse_device_range(const char* range_str, int* devices, int max_devices) {
     char* str = strdup(range_str);
@@ -131,7 +118,7 @@ static int find_device_by_uuid(const char* uuid, unsigned int device_count) {
     return -1;
 }
 
-static void print_device_info_human(nvmlDevice_t device, int device_id, temp_unit_t temp_unit) {
+static void print_device_info_human(nvmlDevice_t device, int device_id, char temp_unit) {
     nvmlReturn_t result;
     char name[MAX_NAME_LEN];
     char uuid[MAX_UUID_LEN];
@@ -150,40 +137,39 @@ static void print_device_info_human(nvmlDevice_t device, int device_id, temp_uni
     
     result = nvmlDeviceGetUUID(device, uuid, sizeof(uuid));
     if (result == NVML_SUCCESS) {
-        printf("UUID: %s\n", uuid);
+        printf("UUID:        %s\n", uuid);
     }
     
     result = nvmlDeviceGetTemperature(device, NVML_TEMPERATURE_GPU, &temperature);
     if (result == NVML_SUCCESS) {
         double temp = convert_temperature(temperature, temp_unit);
-        printf("Temperature: %.1f%s\n", temp, temp_unit_string(temp_unit));
+        printf("Temperature: %.1f%c\n", temp, temp_unit);
     }
     
     result = nvmlDeviceGetMemoryInfo(device, &memory);
     if (result == NVML_SUCCESS) {
         double used_pct = (double)memory.used / memory.total * 100.0;
-        printf("Memory: %llu MB / %llu MB (%.1f%%)\n", 
+        printf("Memory:      %llu MB / %llu MB (%.1f%%)\n", 
                memory.used / (1024 * 1024), memory.total / (1024 * 1024), used_pct);
     }
     
     result = nvmlDeviceGetFanSpeed(device, &fan_speed);
     if (result == NVML_SUCCESS) {
-        printf("Fan Speed: %u%%\n", fan_speed);
+        printf("Fan Speed:   %u%%\n", fan_speed);
     }
     
     result = nvmlDeviceGetPowerUsage(device, &power_usage);
     if (result == NVML_SUCCESS) {
         nvmlDeviceGetPowerManagementLimit(device, &power_limit);
         double power_pct = (double)power_usage / power_limit * 100.0;
-        printf("Power: %.2fW / %.2fW (%.1f%%)\n", 
+        printf("Power:       %.2fW / %.2fW (%.1f%%)\n", 
                power_usage / 1000.0, power_limit / 1000.0, power_pct);
     }
     
     printf("\n");
 }
 
-static void print_device_info_json(nvmlDevice_t device, int device_id, temp_unit_t temp_unit, int is_last) {
-    nvmlReturn_t result;
+static void print_device_info_json(nvmlDevice_t device, int device_id, char temp_unit, int is_last) {
     char name[MAX_NAME_LEN] = "Unknown";
     char uuid[MAX_UUID_LEN] = "Unknown";
     unsigned int temperature = 0;
@@ -204,7 +190,7 @@ static void print_device_info_json(nvmlDevice_t device, int device_id, temp_unit
     printf("    \"name\": \"%s\",\n", name);
     printf("    \"uuid\": \"%s\",\n", uuid);
     printf("    \"temperature\": %.1f,\n", convert_temperature(temperature, temp_unit));
-    printf("    \"temperature_unit\": \"%s\",\n", temp_unit_string(temp_unit));
+    printf("    \"temperature_unit\": \"%c\",\n", temp_unit);
     printf("    \"memory_total_mb\": %llu,\n", memory.total / (1024 * 1024));
     printf("    \"memory_used_mb\": %llu,\n", memory.used / (1024 * 1024));
     printf("    \"memory_free_mb\": %llu,\n", memory.free / (1024 * 1024));
@@ -214,61 +200,41 @@ static void print_device_info_json(nvmlDevice_t device, int device_id, temp_unit
     printf("  }%s\n", is_last ? "" : ",");
 }
 
-static void print_power_cli(nvmlDevice_t device, int device_id, int single_device) {
+static void print_power_cli(nvmlDevice_t device, int device_id) {
     unsigned int power_usage;
     nvmlReturn_t result = nvmlDeviceGetPowerUsage(device, &power_usage);
     
     if (result == NVML_SUCCESS) {
-        if (single_device) {
-            printf("%.2f\n", power_usage / 1000.0);
-        } else {
-            printf("%d:%.2f\n", device_id, power_usage / 1000.0);
-        }
+        printf("%d:%.2f\n", device_id, power_usage / 1000.0);
     } else {
-        if (single_device) {
-            fprintf(stderr, "Error: %s\n", nvmlErrorString(result));
-        } else {
-            fprintf(stderr, "%d:Error: %s\n", device_id, nvmlErrorString(result));
-        }
+        fprintf(stderr, "%d:Error: %s\n", device_id, nvmlErrorString(result));
     }
 }
 
-static void print_fan_cli(nvmlDevice_t device, int device_id, int single_device) {
+static void print_fan_cli(nvmlDevice_t device, int device_id) {
     unsigned int fan_speed;
     nvmlReturn_t result = nvmlDeviceGetFanSpeed(device, &fan_speed);
     
     if (result == NVML_SUCCESS) {
         printf("%d:%u\n", device_id, fan_speed);
     } else {
-        if (single_device) {
-            fprintf(stderr, "Error: %s\n", nvmlErrorString(result));
-        } else {
-            fprintf(stderr, "%d:Error: %s\n", device_id, nvmlErrorString(result));
-        }
+        fprintf(stderr, "%d:Error: %s\n", device_id, nvmlErrorString(result));
     }
 }
 
-static void print_temp_cli(nvmlDevice_t device, int device_id, temp_unit_t temp_unit, int single_device) {
+static void print_temp_cli(nvmlDevice_t device, int device_id, char temp_unit) {
     unsigned int temperature;
     nvmlReturn_t result = nvmlDeviceGetTemperature(device, NVML_TEMPERATURE_GPU, &temperature);
     
     if (result == NVML_SUCCESS) {
         double temp = convert_temperature(temperature, temp_unit);
-        if (single_device) {
-            printf("%d:%.1f\n", device_id, temp);
-        } else {
-            printf("%d:%.1f\n", device_id, temp);
-        }
+        printf("%d:%.1f\n", device_id, temp);
     } else {
-        if (single_device) {
-            fprintf(stderr, "Error: %s\n", nvmlErrorString(result));
-        } else {
-            fprintf(stderr, "%d:Error: %s\n", device_id, nvmlErrorString(result));
-        }
+        fprintf(stderr, "%d:Error: %s\n", device_id, nvmlErrorString(result));
     }
 }
 
-static void print_status_cli(nvmlDevice_t device, int device_id, temp_unit_t temp_unit) {
+static void print_status_cli(nvmlDevice_t device, int device_id, char temp_unit) {
     unsigned int temperature = 0, fan_speed = 0, power_usage = 0;
     
     nvmlDeviceGetTemperature(device, NVML_TEMPERATURE_GPU, &temperature);
@@ -276,13 +242,13 @@ static void print_status_cli(nvmlDevice_t device, int device_id, temp_unit_t tem
     nvmlDeviceGetPowerUsage(device, &power_usage);
     
     double temp = convert_temperature(temperature, temp_unit);
-    printf("%d:%.1f%s,%u%%,%.1fW\n", device_id, temp, temp_unit_string(temp_unit), 
+    printf("%d:%.1f%c,%u%%,%.1fW\n", device_id, temp, temp_unit, 
            fan_speed, power_usage / 1000.0);
 }
 
 static int parse_args(int argc, char* argv[], cli_args_t* args) {
     memset(args, 0, sizeof(cli_args_t));
-    args->temp_unit = TEMP_CELSIUS;
+    args->temp_unit = 'C';
     args->all_devices = 1;
     
     if (argc < 2) {
@@ -347,12 +313,14 @@ static int parse_args(int argc, char* argv[], cli_args_t* args) {
                 args->all_devices = 0;
                 break;
             case 't':
-                if (strcmp(optarg, "C") == 0 || strcmp(optarg, "c") == 0) {
-                    args->temp_unit = TEMP_CELSIUS;
-                } else if (strcmp(optarg, "F") == 0 || strcmp(optarg, "f") == 0) {
-                    args->temp_unit = TEMP_FAHRENHEIT;
-                } else if (strcmp(optarg, "K") == 0 || strcmp(optarg, "k") == 0) {
-                    args->temp_unit = TEMP_KELVIN;
+                if (strlen(optarg) == 1) {
+                    char unit = toupper(optarg[0]);
+                    if (unit == 'C' || unit == 'F' || unit == 'K') {
+                        args->temp_unit = unit;
+                    } else {
+                        fprintf(stderr, "Error: Invalid temperature unit '%s'\n", optarg);
+                        return -1;
+                    }
                 } else {
                     fprintf(stderr, "Error: Invalid temperature unit '%s'\n", optarg);
                     return -1;
@@ -490,7 +458,7 @@ int main(int argc, char* argv[]) {
                         error_count++;
                     }
                 } else {
-                    print_power_cli(device, device_id, target_count == 1);
+                    print_power_cli(device, device_id);
                 }
                 break;
                 
@@ -574,12 +542,12 @@ int main(int argc, char* argv[]) {
                         printf("%d:All fans restored to automatic temperature-based control\n", device_id);
                     }
                 } else {
-                    print_fan_cli(device, device_id, target_count == 1);
+                    print_fan_cli(device, device_id);
                 }
                 break;
                 
             case CMD_TEMP:
-                print_temp_cli(device, device_id, args.temp_unit, target_count == 1);
+                print_temp_cli(device, device_id, args.temp_unit);
                 break;
                 
             case CMD_STATUS:
