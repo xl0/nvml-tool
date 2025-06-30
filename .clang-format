@@ -1,0 +1,60 @@
+# Compact C coding style inspired by Jeremy Howard's preferences
+# Emphasizes readability while being more compact than traditional styles
+
+BasedOnStyle: LLVM
+
+# Basic formatting
+IndentWidth: 2
+TabWidth: 2
+UseTab: Never
+ColumnLimit: 100
+
+# Braces - compact style
+BreakBeforeBraces: Attach
+Cpp11BracedListStyle: true
+BreakConstructorInitializers: BeforeColon
+
+# Functions - compact
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: true
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortBlocksOnASingleLine: Never
+RemoveBracesLLVM: true
+
+# Spacing - minimal but readable
+SpaceAfterCStyleCast: false
+SpaceBeforeParens: ControlStatements
+SpaceInEmptyParentheses: false
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+SpaceBeforeAssignmentOperators: true
+
+# Alignment - keep compact
+AlignAfterOpenBracket: Align
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignOperands: true
+AlignTrailingComments: true
+
+# Line breaks - prefer keeping things together
+AllowAllParametersOfDeclarationOnNextLine: true
+AllowAllArgumentsOnNextLine: true
+BinPackArguments: true
+BinPackParameters: true
+BreakBeforeBinaryOperators: None
+BreakBeforeTernaryOperators: true
+
+# Pointer alignment - left align for compactness
+PointerAlignment: Left
+DerivePointerAlignment: false
+
+# Include sorting
+SortIncludes: true
+IncludeBlocks: Preserve
+
+# Comments
+ReflowComments: true
+
+# C-specific settings
+Standard: c++11
