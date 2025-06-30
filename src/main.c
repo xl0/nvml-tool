@@ -289,7 +289,6 @@ static int parse_args(int argc, char* argv[], cli_args_t* args) {
         return -1;
       }
       break;
-    case 'h': return -1;
     default: return -1;
     }
   }
