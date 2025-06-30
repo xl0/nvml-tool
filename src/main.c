@@ -200,36 +200,40 @@ static void print_device_info_json(nvmlDevice_t device, int device_id, char temp
     printf("  }%s\n", is_last ? "" : ",");
 }
 
-static void print_power_cli(nvmlDevice_t device, int device_id) {
-    unsigned int power_usage;
-    nvmlReturn_t result = nvmlDeviceGetPowerUsage(device, &power_usage);
+static void print_metric_cli(nvmlDevice_t device, int device_id, char metric_type, char temp_unit) {
+    nvmlReturn_t result;
     
-    if (result == NVML_SUCCESS) {
-        printf("%d:%.2f\n", device_id, power_usage / 1000.0);
-    } else {
-        fprintf(stderr, "%d:Error: %s\n", device_id, nvmlErrorString(result));
+    switch (metric_type) {
+        case 'p': { // power
+            unsigned int power_usage;
+            result = nvmlDeviceGetPowerUsage(device, &power_usage);
+            if (result == NVML_SUCCESS) {
+                printf("%d:%.2f\n", device_id, power_usage / 1000.0);
+            }
+            break;
+        }
+        case 'f': { // fan
+            unsigned int fan_speed;
+            result = nvmlDeviceGetFanSpeed(device, &fan_speed);
+            if (result == NVML_SUCCESS) {
+                printf("%d:%u\n", device_id, fan_speed);
+            }
+            break;
+        }
+        case 't': { // temperature
+            unsigned int temperature;
+            result = nvmlDeviceGetTemperature(device, NVML_TEMPERATURE_GPU, &temperature);
+            if (result == NVML_SUCCESS) {
+                double temp = convert_temperature(temperature, temp_unit);
+                printf("%d:%.1f\n", device_id, temp);
+            }
+            break;
+        }
+        default:
+            result = NVML_ERROR_INVALID_ARGUMENT;
     }
-}
-
-static void print_fan_cli(nvmlDevice_t device, int device_id) {
-    unsigned int fan_speed;
-    nvmlReturn_t result = nvmlDeviceGetFanSpeed(device, &fan_speed);
     
-    if (result == NVML_SUCCESS) {
-        printf("%d:%u\n", device_id, fan_speed);
-    } else {
-        fprintf(stderr, "%d:Error: %s\n", device_id, nvmlErrorString(result));
-    }
-}
-
-static void print_temp_cli(nvmlDevice_t device, int device_id, char temp_unit) {
-    unsigned int temperature;
-    nvmlReturn_t result = nvmlDeviceGetTemperature(device, NVML_TEMPERATURE_GPU, &temperature);
-    
-    if (result == NVML_SUCCESS) {
-        double temp = convert_temperature(temperature, temp_unit);
-        printf("%d:%.1f\n", device_id, temp);
-    } else {
+    if (result != NVML_SUCCESS) {
         fprintf(stderr, "%d:Error: %s\n", device_id, nvmlErrorString(result));
     }
 }
@@ -256,21 +260,19 @@ static int parse_args(int argc, char* argv[], cli_args_t* args) {
     }
     
     // Parse command
-    if (strcmp(argv[1], "info") == 0) {
-        args->command = CMD_INFO;
-    } else if (strcmp(argv[1], "power") == 0) {
-        args->command = CMD_POWER;
-    } else if (strcmp(argv[1], "fan") == 0) {
-        args->command = CMD_FAN;
-    } else if (strcmp(argv[1], "temp") == 0) {
-        args->command = CMD_TEMP;
-    } else if (strcmp(argv[1], "status") == 0) {
-        args->command = CMD_STATUS;
-    } else if (strcmp(argv[1], "list") == 0) {
-        args->command = CMD_LIST;
-    } else {
-        return -1;
+    static const struct { const char* name; command_t cmd; } commands[] = {
+        {"info", CMD_INFO}, {"power", CMD_POWER}, {"fan", CMD_FAN}, 
+        {"temp", CMD_TEMP}, {"status", CMD_STATUS}, {"list", CMD_LIST}
+    };
+    
+    args->command = CMD_NONE;
+    for (int i = 0; i < 6; i++) {
+        if (strcmp(argv[1], commands[i].name) == 0) {
+            args->command = commands[i].cmd;
+            break;
+        }
     }
+    if (args->command == CMD_NONE) return -1;
     
     // Check for subcommand
     int start_idx = 2;
@@ -379,19 +381,16 @@ int main(int argc, char* argv[]) {
     }
     
     // Setup device list
-    int* target_devices;
-    int target_count;
+    static int all_devs[MAX_DEVICES];
+    int* target_devices = args.devices;
+    int target_count = args.device_count;
     
     if (args.all_devices) {
-        static int all_devs[MAX_DEVICES];
         for (unsigned int i = 0; i < device_count && i < MAX_DEVICES; i++) {
             all_devs[i] = i;
         }
         target_devices = all_devs;
         target_count = device_count;
-    } else {
-        target_devices = args.devices;
-        target_count = args.device_count;
     }
     
     // JSON output header
@@ -458,13 +457,12 @@ int main(int argc, char* argv[]) {
                         error_count++;
                     }
                 } else {
-                    print_power_cli(device, device_id);
+                    print_metric_cli(device, device_id, 'p', args.temp_unit);
                 }
                 break;
                 
             case CMD_FAN:
-                if (args.subcommand == SUBCMD_SET) {
-                    // Set fan speed to manual mode and adjust speed
+                if (args.subcommand == SUBCMD_SET || args.subcommand == SUBCMD_RESTORE) {
                     unsigned int num_fans = 0;
                     result = nvmlDeviceGetNumFans(device, &num_fans);
                     if (result != NVML_SUCCESS) {
@@ -480,74 +478,48 @@ int main(int argc, char* argv[]) {
                         continue;
                     }
                     
-                    if (args.set_value > 100) {
+                    if (args.subcommand == SUBCMD_SET && args.set_value > 100) {
                         fprintf(stderr, "%d:Error: Fan speed must be between 0-100%%\n", device_id);
                         error_count++;
                         continue;
                     }
                     
-                    // Set fan speed for all fans on this device
                     int fan_errors = 0;
                     for (unsigned int fan = 0; fan < num_fans; fan++) {
-                        result = nvmlDeviceSetFanSpeed_v2(device, fan, args.set_value);
-                        if (result != NVML_SUCCESS) {
-                            fprintf(stderr, "%d:Fan%u:Error: Failed to set fan speed (%s)\n", 
-                                    device_id, fan, nvmlErrorString(result));
-                            fan_errors++;
+                        if (args.subcommand == SUBCMD_SET) {
+                            result = nvmlDeviceSetFanSpeed_v2(device, fan, args.set_value);
+                            if (result == NVML_SUCCESS) {
+                                printf("%d:Fan%u:Set to %u%%\n", device_id, fan, args.set_value);
+                            }
                         } else {
-                            printf("%d:Fan%u:Set to %u%%\n", device_id, fan, args.set_value);
+                            result = nvmlDeviceSetDefaultFanSpeed_v2(device, fan);
+                            if (result == NVML_SUCCESS) {
+                                printf("%d:Fan%u:Restored to automatic control\n", device_id, fan);
+                            }
+                        }
+                        
+                        if (result != NVML_SUCCESS) {
+                            fprintf(stderr, "%d:Fan%u:Error: %s\n", device_id, fan, nvmlErrorString(result));
+                            fan_errors++;
                         }
                     }
                     
                     if (fan_errors > 0) {
                         error_count++;
-                    } else {
+                    } else if (args.subcommand == SUBCMD_SET) {
                         printf("%d:Warning: Fan control is now MANUAL - monitor temperatures!\n", device_id);
                         printf("%d:Note: Use 'nvml-tool fan restore -d %d' to restore automatic control\n", 
                                device_id, device_id);
-                    }
-                } else if (args.subcommand == SUBCMD_RESTORE) {
-                    // Restore automatic fan control
-                    unsigned int num_fans = 0;
-                    result = nvmlDeviceGetNumFans(device, &num_fans);
-                    if (result != NVML_SUCCESS) {
-                        fprintf(stderr, "%d:Error: Cannot get number of fans (%s)\n", 
-                                device_id, nvmlErrorString(result));
-                        error_count++;
-                        continue;
-                    }
-                    
-                    if (num_fans == 0) {
-                        fprintf(stderr, "%d:Error: Device has no controllable fans\n", device_id);
-                        error_count++;
-                        continue;
-                    }
-                    
-                    // Restore automatic control for all fans
-                    int fan_errors = 0;
-                    for (unsigned int fan = 0; fan < num_fans; fan++) {
-                        result = nvmlDeviceSetDefaultFanSpeed_v2(device, fan);
-                        if (result != NVML_SUCCESS) {
-                            fprintf(stderr, "%d:Fan%u:Error: Failed to restore automatic control (%s)\n", 
-                                    device_id, fan, nvmlErrorString(result));
-                            fan_errors++;
-                        } else {
-                            printf("%d:Fan%u:Restored to automatic control\n", device_id, fan);
-                        }
-                    }
-                    
-                    if (fan_errors > 0) {
-                        error_count++;
                     } else {
                         printf("%d:All fans restored to automatic temperature-based control\n", device_id);
                     }
                 } else {
-                    print_fan_cli(device, device_id);
+                    print_metric_cli(device, device_id, 'f', args.temp_unit);
                 }
                 break;
                 
             case CMD_TEMP:
-                print_temp_cli(device, device_id, args.temp_unit);
+                print_metric_cli(device, device_id, 't', args.temp_unit);
                 break;
                 
             case CMD_STATUS:

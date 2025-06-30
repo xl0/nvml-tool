@@ -7,60 +7,45 @@ ifneq ($(PKG_CONFIG_NVML),)
     # Found pkg-config package
     NVML_CFLAGS = $(shell pkg-config --cflags $(PKG_CONFIG_NVML) 2>/dev/null)
     NVML_LIBS = $(shell pkg-config --libs $(PKG_CONFIG_NVML) 2>/dev/null)
-    NVML_VERSION = $(shell pkg-config --modversion $(PKG_CONFIG_NVML) 2>/dev/null)
-    NVML_METHOD = pkg-config ($(PKG_CONFIG_NVML) v$(NVML_VERSION))
 else
-    # Fallback to manual detection
-    NVML_HEADER_PATHS = /usr/include /usr/local/include /usr/local/cuda*/targets/*/include /usr/local/cuda/include /opt/cuda/include /opt/cuda/targets/*/include
-    NVML_INCLUDE = $(shell for path in $(NVML_HEADER_PATHS); do \
-        expanded_path=$$(echo $$path); \
-        for actual_path in $$expanded_path; do \
-            if [ -f "$$actual_path/nvml.h" ]; then echo "-I$$actual_path"; exit 0; fi; \
-        done; \
-        done)
-
-    NVML_LIB_PATHS = /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu /usr/lib64 /usr/local/lib /usr/local/lib64 /usr/local/cuda*/targets/*/lib /usr/local/cuda/lib64 /opt/cuda/lib64 /opt/cuda/targets/*/lib
-    NVML_LIBDIR = $(shell for path in $(NVML_LIB_PATHS); do \
-        expanded_path=$$(echo $$path); \
-        for actual_path in $$expanded_path; do \
-            if [ -f "$$actual_path/libnvidia-ml.so" ] || [ -f "$$actual_path/stubs/libnvidia-ml.so" ]; then echo "-L$$actual_path"; exit 0; fi; \
-        done; \
-        done)
-
-    NVML_CFLAGS = $(NVML_INCLUDE)
-    NVML_LIBS = $(NVML_LIBDIR) -lnvidia-ml
-    NVML_METHOD = manual detection
-endif
-
-# Check if NVML was found
-ifeq ($(NVML_CFLAGS),)
-    $(error NVML headers not found. Please install nvidia-ml-dev or CUDA toolkit)
-endif
-ifeq ($(NVML_LIBS),)
-    $(error NVML library not found. Please install nvidia-ml-dev or CUDA toolkit)
+    # No pkg-config found - check if user provided NVML_CFLAGS and NVML_LIBS
+    ifeq ($(NVML_CFLAGS),)
+        $(error NVML not found via pkg-config. Please provide NVML_CFLAGS and NVML_LIBS. Example: make NVML_CFLAGS="-I/usr/local/cuda/include" NVML_LIBS="-L/usr/local/cuda/lib64 -lnvidia-ml")
+    endif
+    ifeq ($(NVML_LIBS),)
+        $(error NVML not found via pkg-config. Please provide NVML_CFLAGS and NVML_LIBS. Example: make NVML_CFLAGS="-I/usr/local/cuda/include" NVML_LIBS="-L/usr/local/cuda/lib64 -lnvidia-ml")
+    endif
 endif
 
 CFLAGS = -Wall -Wextra -std=c99 -O2 $(NVML_CFLAGS)
 LDFLAGS = $(NVML_LIBS)
 
-TARGET = nvml-tool
-SOURCES = main.c
-OBJECTS = $(SOURCES:.c=.o)
+# Directories
+SRCDIR = src
+BUILDDIR = build
+
+TARGET = $(BUILDDIR)/nvml-tool
+SOURCES = $(SRCDIR)/main.c
+OBJECTS = $(SOURCES:$(SRCDIR)/%.c=$(BUILDDIR)/%.o)
 
 # Default target
 all: $(TARGET)
 
 # Build the main executable
-$(TARGET): $(OBJECTS)
+$(TARGET): $(OBJECTS) | $(BUILDDIR)
 	$(CC) $(OBJECTS) -o $(TARGET) $(LDFLAGS)
 
 # Compile source files
-%.o: %.c
+$(BUILDDIR)/%.o: $(SRCDIR)/%.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+# Create build directory
+$(BUILDDIR):
+	mkdir -p $(BUILDDIR)
 
 # Clean build artifacts
 clean:
-	rm -f $(OBJECTS) $(TARGET)
+	rm -rf $(BUILDDIR)
 
 # Install (default: /usr/local/bin, configurable with PREFIX)
 install: $(TARGET)
@@ -73,8 +58,7 @@ uninstall:
 
 # Show detected NVML paths
 show-nvml:
-	@echo "Detected NVML configuration:"
-	@echo "  Method: $(NVML_METHOD)"
+	@echo "NVML configuration:"
 	@echo "  CFLAGS: $(NVML_CFLAGS)"
 	@echo "  LIBS: $(NVML_LIBS)"
 
@@ -89,7 +73,11 @@ help:
 	@echo "  help      - Show this help message"
 	@echo ""
 	@echo "Variables:"
-	@echo "  PREFIX    - Installation prefix (default: /usr/local)"
-	@echo "              Example: make install PREFIX=/usr"
+	@echo "  PREFIX      - Installation prefix (default: /usr/local)"
+	@echo "                Example: make install PREFIX=/usr"
+	@echo "  NVML_CFLAGS - NVML compiler flags (auto-detected or user-provided)"
+	@echo "                Example: make NVML_CFLAGS=\"-I/usr/local/cuda/include\""
+	@echo "  NVML_LIBS   - NVML linker flags (auto-detected or user-provided)"
+	@echo "                Example: make NVML_LIBS=\"-L/usr/local/cuda/lib64 -lnvidia-ml\""
 
 .PHONY: all clean install uninstall show-nvml help
