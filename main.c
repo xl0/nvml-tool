@@ -22,13 +22,15 @@ typedef enum {
     CMD_POWER,
     CMD_FAN,
     CMD_TEMP,
-    CMD_STATUS
+    CMD_STATUS,
+    CMD_LIST
 } command_t;
 
 typedef enum {
     SUBCMD_NONE,
     SUBCMD_SET,
-    SUBCMD_RESTORE
+    SUBCMD_RESTORE,
+    SUBCMD_JSON
 } subcommand_t;
 
 typedef struct {
@@ -41,24 +43,23 @@ typedef struct {
     subcommand_t subcommand;
     unsigned int set_value;
     temp_unit_t temp_unit;
-    int json_output;
 } cli_args_t;
 
 static void print_usage(const char* program_name) {
     printf("Usage: %s <command> [subcommand] [options] [args]\n", program_name);
     printf("\nCommands:\n");
-    printf("  info                Show comprehensive device information\n");
+    printf("  info [json]         Show comprehensive device information\n");
     printf("  power [set VALUE]   Show/set power usage and limits\n");
     printf("  fan [set VALUE]     Show/set fan speed (NVML v12+)\n");
     printf("  fan restore         Restore automatic fan control\n");
     printf("  temp                Show temperature\n");
     printf("  status              Show compact status overview\n");
+    printf("  list                List all GPUs with index, UUID, and name\n");
     printf("\nDevice Selection:\n");
     printf("  -d, --device LIST   Select devices (default: all)\n");
     printf("                      Examples: -d 0  -d 0-2  -d 0,2,4\n");
     printf("  -u, --uuid UUID     Select device by UUID\n");
     printf("\nOutput Options:\n");
-    printf("  --json              Output in JSON format\n");
     printf("  --temp-unit UNIT    Temperature unit: C, F, K (default: C)\n");
     printf("  -h, --help          Show this help\n");
     printf("\nExamples:\n");
@@ -69,38 +70,9 @@ static void print_usage(const char* program_name) {
     printf("  %s fan                    # Show fan speeds for all devices\n", program_name);
     printf("  %s fan set 80 -d 1        # Set 80%% fan speed on device 1\n", program_name);
     printf("  %s fan restore            # Restore automatic control\n", program_name);
-    printf("  %s status --json          # JSON status for all devices\n", program_name);
+    printf("  %s info json              # JSON info for all devices\n", program_name);
 }
 
-static const char* nvml_error_string(nvmlReturn_t result) {
-    switch (result) {
-        case NVML_SUCCESS: return "Success";
-        case NVML_ERROR_UNINITIALIZED: return "NVML not initialized";
-        case NVML_ERROR_INVALID_ARGUMENT: return "Invalid argument";
-        case NVML_ERROR_NOT_SUPPORTED: return "Not supported";
-        case NVML_ERROR_NO_PERMISSION: return "Insufficient permissions";
-        case NVML_ERROR_ALREADY_INITIALIZED: return "Already initialized";
-        case NVML_ERROR_NOT_FOUND: return "Not found";
-        case NVML_ERROR_INSUFFICIENT_SIZE: return "Insufficient size";
-        case NVML_ERROR_INSUFFICIENT_POWER: return "Insufficient power";
-        case NVML_ERROR_DRIVER_NOT_LOADED: return "Driver not loaded";
-        case NVML_ERROR_TIMEOUT: return "Timeout";
-        case NVML_ERROR_IRQ_ISSUE: return "IRQ issue";
-        case NVML_ERROR_LIBRARY_NOT_FOUND: return "Library not found";
-        case NVML_ERROR_FUNCTION_NOT_FOUND: return "Function not found";
-        case NVML_ERROR_CORRUPTED_INFOROM: return "Corrupted InfoROM";
-        case NVML_ERROR_GPU_IS_LOST: return "GPU is lost";
-        case NVML_ERROR_RESET_REQUIRED: return "Reset required";
-        case NVML_ERROR_OPERATING_SYSTEM: return "Operating system error";
-        case NVML_ERROR_LIB_RM_VERSION_MISMATCH: return "Library/RM version mismatch";
-        case NVML_ERROR_IN_USE: return "In use";
-        case NVML_ERROR_MEMORY: return "Memory error";
-        case NVML_ERROR_NO_DATA: return "No data";
-        case NVML_ERROR_VGPU_ECC_NOT_SUPPORTED: return "vGPU ECC not supported";
-        case NVML_ERROR_INSUFFICIENT_RESOURCES: return "Insufficient resources";
-        default: return "Unknown error";
-    }
-}
 
 static double convert_temperature(unsigned int temp_c, temp_unit_t unit) {
     switch (unit) {
@@ -113,10 +85,10 @@ static double convert_temperature(unsigned int temp_c, temp_unit_t unit) {
 
 static const char* temp_unit_string(temp_unit_t unit) {
     switch (unit) {
-        case TEMP_CELSIUS: return "°C";
-        case TEMP_FAHRENHEIT: return "°F";
+        case TEMP_CELSIUS: return "C";
+        case TEMP_FAHRENHEIT: return "F";
         case TEMP_KELVIN: return "K";
-        default: return "°C";
+        default: return "C";
     }
 }
 
@@ -254,9 +226,9 @@ static void print_power_cli(nvmlDevice_t device, int device_id, int single_devic
         }
     } else {
         if (single_device) {
-            fprintf(stderr, "Error: %s\n", nvml_error_string(result));
+            fprintf(stderr, "Error: %s\n", nvmlErrorString(result));
         } else {
-            fprintf(stderr, "%d:Error: %s\n", device_id, nvml_error_string(result));
+            fprintf(stderr, "%d:Error: %s\n", device_id, nvmlErrorString(result));
         }
     }
 }
@@ -269,9 +241,9 @@ static void print_fan_cli(nvmlDevice_t device, int device_id, int single_device)
         printf("%d:%u\n", device_id, fan_speed);
     } else {
         if (single_device) {
-            fprintf(stderr, "Error: %s\n", nvml_error_string(result));
+            fprintf(stderr, "Error: %s\n", nvmlErrorString(result));
         } else {
-            fprintf(stderr, "%d:Error: %s\n", device_id, nvml_error_string(result));
+            fprintf(stderr, "%d:Error: %s\n", device_id, nvmlErrorString(result));
         }
     }
 }
@@ -289,9 +261,9 @@ static void print_temp_cli(nvmlDevice_t device, int device_id, temp_unit_t temp_
         }
     } else {
         if (single_device) {
-            fprintf(stderr, "Error: %s\n", nvml_error_string(result));
+            fprintf(stderr, "Error: %s\n", nvmlErrorString(result));
         } else {
-            fprintf(stderr, "%d:Error: %s\n", device_id, nvml_error_string(result));
+            fprintf(stderr, "%d:Error: %s\n", device_id, nvmlErrorString(result));
         }
     }
 }
@@ -328,6 +300,8 @@ static int parse_args(int argc, char* argv[], cli_args_t* args) {
         args->command = CMD_TEMP;
     } else if (strcmp(argv[1], "status") == 0) {
         args->command = CMD_STATUS;
+    } else if (strcmp(argv[1], "list") == 0) {
+        args->command = CMD_LIST;
     } else {
         return -1;
     }
@@ -346,12 +320,14 @@ static int parse_args(int argc, char* argv[], cli_args_t* args) {
     } else if (argc > 2 && strcmp(argv[2], "restore") == 0) {
         args->subcommand = SUBCMD_RESTORE;
         start_idx = 3;
+    } else if (argc > 2 && strcmp(argv[2], "json") == 0) {
+        args->subcommand = SUBCMD_JSON;
+        start_idx = 3;
     }
     
     static struct option long_options[] = {
         {"device", required_argument, 0, 'd'},
         {"uuid", required_argument, 0, 'u'},
-        {"json", no_argument, 0, 'j'},
         {"temp-unit", required_argument, 0, 't'},
         {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
@@ -359,7 +335,7 @@ static int parse_args(int argc, char* argv[], cli_args_t* args) {
     
     int opt;
     optind = start_idx;
-    while ((opt = getopt_long(argc, argv, "d:u:jt:h", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "d:u:t:h", long_options, NULL)) != -1) {
         switch (opt) {
             case 'd':
                 args->device_count = parse_device_range(optarg, args->devices, MAX_DEVICES);
@@ -369,9 +345,6 @@ static int parse_args(int argc, char* argv[], cli_args_t* args) {
                 strncpy(args->uuid, optarg, sizeof(args->uuid) - 1);
                 args->use_uuid = 1;
                 args->all_devices = 0;
-                break;
-            case 'j':
-                args->json_output = 1;
                 break;
             case 't':
                 if (strcmp(optarg, "C") == 0 || strcmp(optarg, "c") == 0) {
@@ -407,13 +380,13 @@ int main(int argc, char* argv[]) {
     
     result = nvmlInit();
     if (result != NVML_SUCCESS) {
-        fprintf(stderr, "Error: Failed to initialize NVML (%s)\n", nvml_error_string(result));
+        fprintf(stderr, "Error: Failed to initialize NVML (%s)\n", nvmlErrorString(result));
         return 1;
     }
     
     result = nvmlDeviceGetCount(&device_count);
     if (result != NVML_SUCCESS) {
-        fprintf(stderr, "Error: Failed to get device count (%s)\n", nvml_error_string(result));
+        fprintf(stderr, "Error: Failed to get device count (%s)\n", nvmlErrorString(result));
         nvmlShutdown();
         return 1;
     }
@@ -454,7 +427,7 @@ int main(int argc, char* argv[]) {
     }
     
     // JSON output header
-    if (args.json_output && args.command == CMD_INFO) {
+    if (args.subcommand == SUBCMD_JSON && args.command == CMD_INFO) {
         printf("[\n");
     }
     
@@ -474,14 +447,14 @@ int main(int argc, char* argv[]) {
         result = nvmlDeviceGetHandleByIndex(device_id, &device);
         if (result != NVML_SUCCESS) {
             fprintf(stderr, "Error: Failed to get device handle for device %d (%s)\n", 
-                    device_id, nvml_error_string(result));
+                    device_id, nvmlErrorString(result));
             error_count++;
             continue;
         }
         
         switch (args.command) {
             case CMD_INFO:
-                if (args.json_output) {
+                if (args.subcommand == SUBCMD_JSON) {
                     print_device_info_json(device, device_id, args.temp_unit, i == target_count - 1);
                 } else {
                     print_device_info_human(device, device_id, args.temp_unit);
@@ -496,7 +469,7 @@ int main(int argc, char* argv[]) {
                     result = nvmlDeviceGetPowerManagementLimitConstraints(device, &min_limit, &max_limit);
                     if (result != NVML_SUCCESS) {
                         fprintf(stderr, "%d:Error: Cannot get power limit constraints (%s)\n", 
-                                device_id, nvml_error_string(result));
+                                device_id, nvmlErrorString(result));
                         error_count++;
                         continue;
                     }
@@ -513,7 +486,7 @@ int main(int argc, char* argv[]) {
                         printf("%d:Power limit set to %uW\n", device_id, args.set_value);
                     } else {
                         fprintf(stderr, "%d:Error: Failed to set power limit (%s)\n", 
-                                device_id, nvml_error_string(result));
+                                device_id, nvmlErrorString(result));
                         error_count++;
                     }
                 } else {
@@ -528,7 +501,7 @@ int main(int argc, char* argv[]) {
                     result = nvmlDeviceGetNumFans(device, &num_fans);
                     if (result != NVML_SUCCESS) {
                         fprintf(stderr, "%d:Error: Cannot get number of fans (%s)\n", 
-                                device_id, nvml_error_string(result));
+                                device_id, nvmlErrorString(result));
                         error_count++;
                         continue;
                     }
@@ -551,7 +524,7 @@ int main(int argc, char* argv[]) {
                         result = nvmlDeviceSetFanSpeed_v2(device, fan, args.set_value);
                         if (result != NVML_SUCCESS) {
                             fprintf(stderr, "%d:Fan%u:Error: Failed to set fan speed (%s)\n", 
-                                    device_id, fan, nvml_error_string(result));
+                                    device_id, fan, nvmlErrorString(result));
                             fan_errors++;
                         } else {
                             printf("%d:Fan%u:Set to %u%%\n", device_id, fan, args.set_value);
@@ -571,7 +544,7 @@ int main(int argc, char* argv[]) {
                     result = nvmlDeviceGetNumFans(device, &num_fans);
                     if (result != NVML_SUCCESS) {
                         fprintf(stderr, "%d:Error: Cannot get number of fans (%s)\n", 
-                                device_id, nvml_error_string(result));
+                                device_id, nvmlErrorString(result));
                         error_count++;
                         continue;
                     }
@@ -588,7 +561,7 @@ int main(int argc, char* argv[]) {
                         result = nvmlDeviceSetDefaultFanSpeed_v2(device, fan);
                         if (result != NVML_SUCCESS) {
                             fprintf(stderr, "%d:Fan%u:Error: Failed to restore automatic control (%s)\n", 
-                                    device_id, fan, nvml_error_string(result));
+                                    device_id, fan, nvmlErrorString(result));
                             fan_errors++;
                         } else {
                             printf("%d:Fan%u:Restored to automatic control\n", device_id, fan);
@@ -613,16 +586,28 @@ int main(int argc, char* argv[]) {
                 print_status_cli(device, device_id, args.temp_unit);
                 break;
                 
+            case CMD_LIST:
+                {
+                    char uuid[NVML_DEVICE_UUID_BUFFER_SIZE];
+                    char name[NVML_DEVICE_NAME_BUFFER_SIZE];
+                    
+                    nvmlDeviceGetUUID(device, uuid, sizeof(uuid));
+                    nvmlDeviceGetName(device, name, sizeof(name));
+                    
+                    printf("%d:%s %s\n", device_id, uuid, name);
+                }
+                break;
+                
             default:
                 break;
         }
     }
     
     // JSON output footer
-    if (args.json_output && args.command == CMD_INFO) {
+    if (args.subcommand == SUBCMD_JSON && args.command == CMD_INFO) {
         printf("]\n");
     }
     
     nvmlShutdown();
-    return error_count > 0 ? 1 : 0;
+    return !!error_count;
 }
