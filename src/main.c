@@ -5,14 +5,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
+#include <unistd.h>
+#include <sys/ioctl.h>
 
 #define MAX_DEVICES 64
 #define MAX_NAME_LEN 256
 #define MAX_UUID_LEN 80
+#define MAX_SETPOINTS 16
 
-typedef enum { CMD_NONE, CMD_INFO, CMD_POWER, CMD_FAN, CMD_TEMP, CMD_STATUS, CMD_LIST } command_t;
+typedef enum { CMD_NONE, CMD_INFO, CMD_POWER, CMD_FAN, CMD_TEMP, CMD_STATUS, CMD_LIST, CMD_FANCTL } command_t;
 
 typedef enum { SUBCMD_NONE, SUBCMD_SET, SUBCMD_RESTORE, SUBCMD_JSON } subcommand_t;
+
+typedef struct {
+  unsigned int temp;
+  unsigned int fan;
+} setpoint_t;
 
 typedef struct {
   int devices[MAX_DEVICES];
@@ -24,7 +33,110 @@ typedef struct {
   subcommand_t subcommand;
   unsigned int set_value;
   char temp_unit;
+  setpoint_t setpoints[MAX_SETPOINTS];
+  int setpoint_count;
 } cli_args_t;
+
+// Global variables for signal handling
+static volatile int running = 1;
+static nvmlDevice_t controlled_devices[MAX_DEVICES];
+static int controlled_device_ids[MAX_DEVICES];
+static int controlled_device_count = 0;
+static int is_terminal = 0;
+
+static void signal_handler(int signum) {
+  (void)signum;
+  running = 0;
+  printf("\nRestoring automatic fan control...\n");
+  
+  for (int i = 0; i < controlled_device_count; i++) {
+    unsigned int num_fans = 0;
+    if (nvmlDeviceGetNumFans(controlled_devices[i], &num_fans) == NVML_SUCCESS) {
+      for (unsigned int fan = 0; fan < num_fans; fan++) {
+        nvmlDeviceSetFanControlPolicy(controlled_devices[i], fan, NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW);
+      }
+    }
+  }
+}
+
+static int parse_setpoints(int argc, char* argv[], int start_idx, setpoint_t* setpoints, int max_setpoints) {
+  int count = 0;
+  
+  for (int i = start_idx; i < argc && count < max_setpoints; i++) {
+    if (argv[i][0] == '-') break; // Stop at next option
+    
+    char* colon = strchr(argv[i], ':');
+    if (!colon) continue;
+    
+    *colon = '\0';
+    unsigned int temp = atoi(argv[i]);
+    unsigned int fan = atoi(colon + 1);
+    *colon = ':'; // Restore for error messages
+    
+    if (temp == 0 || fan > 100) {
+      fprintf(stderr, "Error: Invalid setpoint '%s' (temp must be >0, fan 0-100%%)\n", argv[i]);
+      return -1;
+    }
+    
+    setpoints[count].temp = temp;
+    setpoints[count].fan = fan;
+    count++;
+  }
+  
+  if (count == 0) {
+    fprintf(stderr, "Error: No valid setpoints provided\n");
+    return -1;
+  }
+  
+  // Sort setpoints by temperature
+  for (int i = 0; i < count - 1; i++) {
+    for (int j = i + 1; j < count; j++) {
+      if (setpoints[i].temp > setpoints[j].temp) {
+        setpoint_t temp_sp = setpoints[i];
+        setpoints[i] = setpoints[j];
+        setpoints[j] = temp_sp;
+      }
+    }
+  }
+  
+  return count;
+}
+
+static unsigned int interpolate_fan_speed(unsigned int current_temp, const setpoint_t* setpoints, int count) {
+  if (count == 0) return 0;
+  
+  // Below first setpoint
+  if (current_temp <= setpoints[0].temp) {
+    return setpoints[0].fan;
+  }
+  
+  // Above last setpoint
+  if (current_temp >= setpoints[count - 1].temp) {
+    return setpoints[count - 1].fan;
+  }
+  
+  // Find surrounding setpoints and interpolate
+  for (int i = 0; i < count - 1; i++) {
+    if (current_temp >= setpoints[i].temp && current_temp <= setpoints[i + 1].temp) {
+      unsigned int temp_range = setpoints[i + 1].temp - setpoints[i].temp;
+      unsigned int fan_range = setpoints[i + 1].fan - setpoints[i].fan;
+      unsigned int temp_offset = current_temp - setpoints[i].temp;
+      
+      return setpoints[i].fan + (fan_range * temp_offset) / temp_range;
+    }
+  }
+  
+  return setpoints[0].fan; // Fallback
+}
+
+static void clear_lines(int count) {
+  if (is_terminal && count > 0) {
+    // Move cursor up and clear lines
+    for (int i = 0; i < count; i++) {
+      printf("\033[1A\033[2K"); // Move up one line and clear it
+    }
+  }
+}
 
 static void print_usage(const char* name) {
   printf("Usage: %s <command> [subcommand] [options] [args]\n", name);
@@ -33,6 +145,7 @@ static void print_usage(const char* name) {
   printf("  power [set VALUE]   Show/set power usage and limits\n");
   printf("  fan [set VALUE]     Show/set fan speed (NVML v12+)\n");
   printf("  fan restore         Restore automatic fan control\n");
+  printf("  fanctl SETPOINTS    Dynamic fan control with temperature setpoints\n");
   printf("  temp                Show temperature\n");
   printf("  status              Show compact status overview\n");
   printf("  list                List all GPUs with index, UUID, and name\n");
@@ -51,6 +164,7 @@ static void print_usage(const char* name) {
   printf("  %s fan                    # Show fan speeds for all devices\n", name);
   printf("  %s fan set 80 -d 1        # Set 80%% fan speed on device 1\n", name);
   printf("  %s fan restore            # Restore automatic control\n", name);
+  printf("  %s fanctl 50:30 70:60 80:90 -d 0  # Dynamic fan control (Ctrl-C to exit)\n", name);
   printf("  %s info json              # JSON info for all devices\n", name);
 }
 
@@ -230,10 +344,10 @@ static int parse_args(int argc, char* argv[], cli_args_t* args) {
     const char* name;
     command_t cmd;
   } commands[] = {{"info", CMD_INFO}, {"power", CMD_POWER},   {"fan", CMD_FAN},
-                  {"temp", CMD_TEMP}, {"status", CMD_STATUS}, {"list", CMD_LIST}};
+                  {"fanctl", CMD_FANCTL}, {"temp", CMD_TEMP}, {"status", CMD_STATUS}, {"list", CMD_LIST}};
 
   args->command = CMD_NONE;
-  for (int i = 0; i < 6; i++) {
+  for (int i = 0; i < 7; i++) {
     if (strcmp(argv[1], commands[i].name) == 0) {
       args->command = commands[i].cmd;
       break;
@@ -241,9 +355,22 @@ static int parse_args(int argc, char* argv[], cli_args_t* args) {
   }
   if (args->command == CMD_NONE) return -1;
 
-  // Check for subcommand
+  // Check for subcommand or fanctl setpoints
   int start_idx = 2;
-  if (argc > 2 && strcmp(argv[2], "set") == 0) {
+  if (args->command == CMD_FANCTL) {
+    // Parse setpoints for fanctl command
+    args->setpoint_count = parse_setpoints(argc, argv, 2, args->setpoints, MAX_SETPOINTS);
+    if (args->setpoint_count < 0) return -1;
+    
+    // Find where setpoints end (next argument starting with -)
+    for (int i = 2; i < argc; i++) {
+      if (argv[i][0] == '-') {
+        start_idx = i;
+        break;
+      }
+      if (i == argc - 1) start_idx = argc; // No more options
+    }
+  } else if (argc > 2 && strcmp(argv[2], "set") == 0) {
     args->subcommand = SUBCMD_SET;
     if (argc > 3) {
       args->set_value = atoi(argv[3]);
@@ -444,7 +571,7 @@ int main(int argc, char* argv[]) {
             if (result == NVML_SUCCESS)
               printf("%d:Fan%u:Set to %u%%\n", device_id, fan, args.set_value);
           } else {
-            result = nvmlDeviceSetDefaultFanSpeed_v2(device, fan);
+            result = nvmlDeviceSetFanControlPolicy(device, fan, NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW);
             if (result == NVML_SUCCESS)
               printf("%d:Fan%u:Restored to automatic control\n", device_id, fan);
           }
@@ -483,12 +610,104 @@ int main(int argc, char* argv[]) {
       printf("%d:%s %s\n", device_id, uuid, name);
     } break;
 
+    case CMD_FANCTL: {
+      // Check if device supports fan control
+      unsigned int num_fans = 0;
+      result = nvmlDeviceGetNumFans(device, &num_fans);
+      if (result != NVML_SUCCESS || num_fans == 0) {
+        fprintf(stderr, "%d:Error: Device has no controllable fans\n", device_id);
+        error_count++;
+        continue;
+      }
+      
+      // Store device for cleanup
+      if (controlled_device_count < MAX_DEVICES) {
+        controlled_devices[controlled_device_count] = device;
+        controlled_device_ids[controlled_device_count] = device_id;
+        controlled_device_count++;
+      }
+    } break;
+
     default: break;
     }
   }
 
   // JSON output footer
   if (args.subcommand == SUBCMD_JSON && args.command == CMD_INFO) printf("]\n");
+
+  // Handle fanctl main loop
+  if (args.command == CMD_FANCTL && controlled_device_count > 0 && error_count == 0) {
+    // Set up signal handler
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+    
+    // Check if stdout is a terminal
+    is_terminal = isatty(STDOUT_FILENO);
+    
+    printf("Starting dynamic fan control for %d device(s) (Ctrl-C to exit)\n", controlled_device_count);
+    printf("Setpoints: ");
+    for (int sp = 0; sp < args.setpoint_count; sp++) {
+      printf("%u:%u%%", args.setpoints[sp].temp, args.setpoints[sp].fan);
+      if (sp < args.setpoint_count - 1) printf(" ");
+    }
+    printf("\n");
+    
+    if (is_terminal) {
+      printf("\n"); // Add blank line for device status updates
+    }
+    
+    // Main control loop
+    int first_iteration = 1;
+    while (running) {
+      if (is_terminal && !first_iteration) {
+        // Clear previous device status lines
+        clear_lines(controlled_device_count);
+      }
+      
+      for (int dev_idx = 0; dev_idx < controlled_device_count; dev_idx++) {
+        nvmlDevice_t device = controlled_devices[dev_idx];
+        int device_id = controlled_device_ids[dev_idx]; // Get original device ID
+        
+        unsigned int current_temp = 0;
+        result = nvmlDeviceGetTemperature(device, NVML_TEMPERATURE_GPU, &current_temp);
+        if (result != NVML_SUCCESS) {
+          fprintf(stderr, "%d:Error: Cannot read temperature (%s)\n", device_id, nvmlErrorString(result));
+          running = 0;
+          break;
+        }
+        
+        unsigned int target_fan = interpolate_fan_speed(current_temp, args.setpoints, args.setpoint_count);
+        
+        // Set fan speed for all fans on this device
+        unsigned int num_fans = 0;
+        nvmlDeviceGetNumFans(device, &num_fans);
+        
+        int fan_errors = 0;
+        for (unsigned int fan = 0; fan < num_fans; fan++) {
+          result = nvmlDeviceSetFanSpeed_v2(device, fan, target_fan);
+          if (result != NVML_SUCCESS) {
+            fprintf(stderr, "%d:Fan%u:Error: %s\n", device_id, fan, nvmlErrorString(result));
+            fan_errors++;
+          }
+        }
+        
+        if (fan_errors == 0) {
+          double temp_display = convert_temperature(current_temp, args.temp_unit);
+          printf("%d:%.1f%c -> %u%%\n", device_id, temp_display, args.temp_unit, target_fan);
+        } else {
+          running = 0;
+          break;
+        }
+      }
+      
+      fflush(stdout); // Ensure output is displayed immediately
+      
+      first_iteration = 0;
+      if (running) sleep(2); // Update every 2 seconds
+    }
+    
+    // Cleanup is handled by signal handler
+  }
 
   nvmlShutdown();
   return !!error_count;
