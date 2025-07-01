@@ -43,6 +43,9 @@ sudo nvml-tool fan set 80 -d 0
 # Restore automatic fan control
 sudo nvml-tool fan restore -d 0
 
+# Dynamic fan control with temperature setpoints (requires root)
+sudo nvml-tool fanctl 50:30 70:60 80:90 -d 0
+
 # Quick status overview
 nvml-tool status
 ```
@@ -96,6 +99,35 @@ Show compact status overview with temperature, fan speed, and power.
 nvml-tool status                  # All devices
 nvml-tool status -d 0-1           # Devices 0 and 1
 ```
+
+#### `fanctl SETPOINTS`
+Dynamic fan control using temperature setpoints with linear interpolation. Continuously monitors GPU temperature and adjusts fan speed based on the defined temperature-to-fan-speed mapping.
+
+**Requirements:** Root access, controllable fans
+
+```bash
+# Basic usage with temperature:fan% setpoints
+sudo nvml-tool fanctl 50:30 70:60 80:90 -d 0
+
+# Multiple setpoints for fine control
+sudo nvml-tool fanctl 40:20 50:30 60:45 70:60 80:80 90:100
+
+# Control all devices
+sudo nvml-tool fanctl 50:30 70:60 80:90
+```
+
+**How it works:**
+- Takes temperature:fan-speed setpoints (e.g., `70:60` = 70°C → 60% fan speed)
+- Uses linear interpolation between setpoints for smooth transitions
+- Updates fan speeds every 2 seconds based on current GPU temperature
+- Shows live status updates when run in terminal
+- Automatically restores automatic fan control on exit (Ctrl-C)
+
+**Safety considerations:**
+- Monitor temperatures carefully when using manual fan control
+- Insufficient cooling can damage your GPU
+- Use `Ctrl-C` to exit and restore automatic control
+- Fan control is reset to automatic if the tool exits unexpectedly
 
 #### `list`
 List all available GPUs with their IDs, UUIDs, and names.
@@ -171,7 +203,20 @@ nvml-tool temp
 # Control (requires root)
 sudo nvml-tool power set 200 -d 0
 sudo nvml-tool fan set 75 -d 0
+sudo nvml-tool fanctl 50:30 70:60 80:90 -d 0
 ```
+
+### Fan Control Issues
+
+**Error: "Device has no controllable fans"**
+- Some GPUs don't support manual fan control
+- Older NVIDIA drivers may not support fan control
+- Check if your GPU model supports fan control
+
+**Fanctl not working as expected:**
+- Ensure you're running as root (`sudo`)
+- Check that NVML version supports fan control policies
+- Monitor GPU temperatures to verify setpoints are reasonable
 
 ## Output Examples
 
@@ -209,4 +254,16 @@ Power:       125.5W / 450.0W (27.9%)
 0:45.2C,35%,125.5W
 1:42.1C,40%,98.2W
 2:50.3C,45%,156.7W
+```
+
+### Dynamic Fan Control
+```
+Starting dynamic fan control for 1 device(s) (Ctrl-C to exit)
+Setpoints: 50:30% 70:60% 80:90%
+
+0:52.3C -> 42%
+0:53.1C -> 44%
+0:54.2C -> 47%
+^C
+Restoring automatic fan control...
 ```
