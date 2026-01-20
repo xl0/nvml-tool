@@ -1,0 +1,7 @@
+[
+  {
+    "directory": "/home/xl0/projects/nvml-tool",
+    "file": "/home/xl0/projects/nvml-tool/src/main.c",
+    "command": "gcc -Wall -Wextra -std=c99 -O2 -I/usr/local/cuda-12.6//targets/x86_64-linux/include -c /home/xl0/projects/nvml-tool/src/main.c -o /home/xl0/projects/nvml-tool/build/main.o"
+  }
+]

@@ -65,12 +65,13 @@ show-nvml:
 # Show help
 help:
 	@echo "Available targets:"
-	@echo "  all       - Build the program (default)"
-	@echo "  clean     - Remove build artifacts"
-	@echo "  install   - Install to PREFIX/bin (default: /usr/local/bin)"
-	@echo "  uninstall - Remove from PREFIX/bin"
-	@echo "  show-nvml - Show detected NVML paths"
-	@echo "  help      - Show this help message"
+	@echo "  all                   - Build the program (default)"
+	@echo "  clean                 - Remove build artifacts"
+	@echo "  install               - Install to PREFIX/bin (default: /usr/local/bin)"
+	@echo "  uninstall             - Remove from PREFIX/bin"
+	@echo "  show-nvml             - Show detected NVML paths"
+	@echo "  compile_commands.json - Generate clangd compile database"
+	@echo "  help                  - Show this help message"
 	@echo ""
 	@echo "Variables:"
 	@echo "  PREFIX      - Installation prefix (default: /usr/local)"
@@ -79,5 +80,11 @@ help:
 	@echo "                Example: make NVML_CFLAGS=\"-I/usr/local/cuda/include\""
 	@echo "  NVML_LIBS   - NVML linker flags (auto-detected or user-provided)"
 	@echo "                Example: make NVML_LIBS=\"-L/usr/local/cuda/lib64 -lnvidia-ml\""
+
+# Generate compile_commands.json for clangd
+compile_commands.json: $(SOURCES)
+	@printf '[\n  {\n    "directory": "%s",\n    "file": "%s",\n    "command": "%s %s -c %s -o %s"\n  }\n]\n' \
+		"$(CURDIR)" "$(CURDIR)/$(SOURCES)" "$(CC)" "$(CFLAGS)" "$(CURDIR)/$(SOURCES)" "$(CURDIR)/$(OBJECTS)" > $@
+	@echo "Generated $@"
 
 .PHONY: all clean install uninstall show-nvml help
