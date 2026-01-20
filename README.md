@@ -156,7 +156,7 @@ nvml-tool list                    # Simple device listing
 #### Temperature Units
 ```bash
 --temp-unit C                     # Celsius (default)
---temp-unit F                     # Fahrenheit  
+--temp-unit F                     # Fahrenheit
 --temp-unit K                     # Kelvin
 ```
 
@@ -256,7 +256,7 @@ Power:       125.5W / 450.0W (27.9%)
 2:50.3C,45%,156.7W
 ```
 
-### Dynamic Fan Control
+### Dynamic Fan Control (reverts to automatic, except for SIGSTOP)
 ```
 Starting dynamic fan control for 1 device(s) (Ctrl-C to exit)
 Setpoints: 50:30% 70:60% 80:90%

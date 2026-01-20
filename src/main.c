@@ -54,9 +54,11 @@ static int controlled_device_count = 0;
 static int is_terminal = 0;
 
 static void signal_handler(int signum) {
-  (void)signum;
   running = 0;
-  printf("\nRestoring automatic fan control...\n");
+
+  // Use write() instead of printf() - it's async-signal-safe
+  static const char msg[] = "\nRestoring automatic fan control...\n";
+  ssize_t unused __attribute__((unused)) = write(STDOUT_FILENO, msg, sizeof(msg) - 1);
 
   for (int i = 0; i < controlled_device_count; i++) {
     unsigned int num_fans = 0;
@@ -67,6 +69,43 @@ static void signal_handler(int signum) {
       }
     }
   }
+
+  // For crash signals, we must exit to avoid infinite signal loop
+  if (signum == SIGSEGV || signum == SIGBUS || signum == SIGFPE || signum == SIGILL) {
+    _exit(128 + signum);  // _exit is async-signal-safe, exit() is not
+  }
+}
+
+static void sigtstp_handler(int signum) {
+  (void)signum;
+
+  // Restore automatic fan control before suspending
+  static const char msg[] = "\nSuspending - restoring automatic fan control...\n";
+  ssize_t unused __attribute__((unused)) = write(STDOUT_FILENO, msg, sizeof(msg) - 1);
+
+  for (int i = 0; i < controlled_device_count; i++) {
+    unsigned int num_fans = 0;
+    if (nvmlDeviceGetNumFans(controlled_devices[i], &num_fans) == NVML_SUCCESS) {
+      for (unsigned int fan = 0; fan < num_fans; fan++) {
+        nvmlDeviceSetFanControlPolicy(controlled_devices[i], fan,
+                                      NVML_FAN_POLICY_TEMPERATURE_CONTINOUS_SW);
+      }
+    }
+  }
+
+  // Reset SIGTSTP to default and re-raise to actually suspend
+  signal(SIGTSTP, SIG_DFL);
+  raise(SIGTSTP);
+}
+
+static void sigcont_handler(int signum) {
+  (void)signum;
+
+  static const char msg[] = "Resuming manual fan control...\n";
+  ssize_t unused __attribute__((unused)) = write(STDOUT_FILENO, msg, sizeof(msg) - 1);
+
+  // Re-register SIGTSTP handler for next Ctrl+Z
+  signal(SIGTSTP, sigtstp_handler);
 }
 
 static int parse_setpoints(int argc, char* argv[], int start_idx, setpoint_t* setpoints,
@@ -645,9 +684,22 @@ int main(int argc, char* argv[]) {
 
   // Handle fanctl main loop
   if (args.command == CMD_FANCTL && controlled_device_count > 0 && error_count == 0) {
-    // Set up signal handler
-    signal(SIGINT, signal_handler);
-    signal(SIGTERM, signal_handler);
+    // Set up signal handlers for graceful termination
+    signal(SIGINT, signal_handler);   // Ctrl+C
+    signal(SIGTERM, signal_handler);  // kill command
+    signal(SIGHUP, signal_handler);   // Terminal hangup (SSH disconnect)
+    signal(SIGQUIT, signal_handler);  // Ctrl+backslash
+
+    // Suspend/resume handling - restore auto on suspend, resume manual on continue
+    signal(SIGTSTP, sigtstp_handler); // Ctrl+Z
+    signal(SIGCONT, sigcont_handler); // fg
+
+    // Best-effort cleanup on crash - program state is undefined but
+    // restoring fan control is critical to prevent GPU overheating
+    signal(SIGSEGV, signal_handler);  // Segmentation fault
+    signal(SIGBUS, signal_handler);   // Bus error
+    signal(SIGFPE, signal_handler);   // Floating point exception
+    signal(SIGILL, signal_handler);   // Illegal instruction
 
     // Check if stdout is a terminal
     is_terminal = isatty(STDOUT_FILENO);
