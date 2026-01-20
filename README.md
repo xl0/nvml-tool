@@ -251,19 +251,19 @@ Power:       125.5W / 450.0W (27.9%)
 
 ### Status Overview
 ```
-0:45.2C,35%,125.5W
-1:42.1C,40%,98.2W
-2:50.3C,45%,156.7W
+0:45.2°C,35%,125.5W
+1:42.1°C,40%,98.2W
+2:50.3°C,45%,156.7W
 ```
 
 ### Dynamic Fan Control (reverts to automatic, except for SIGSTOP)
 ```
 Starting dynamic fan control for 1 device(s) (Ctrl-C to exit)
-Setpoints: 50:30% 70:60% 80:90%
+Setpoints: 50°C:30% 70°C:60% 80°C:90%
 
-0:52.3C -> 42%
-0:53.1C -> 44%
-0:54.2C -> 47%
+0:52.3°C -> 42%
+0:53.1°C -> 44%
+0:54.2°C -> 47%
 ^C
 Restoring automatic fan control...
 ```

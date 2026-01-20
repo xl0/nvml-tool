@@ -293,7 +293,7 @@ static void print_device_info_human(nvmlDevice_t device, int device_id, char tem
   result = nvmlDeviceGetTemperature(device, NVML_TEMPERATURE_GPU, &temperature);
   if (result == NVML_SUCCESS) {
     double temp = convert_temperature(temperature, temp_unit);
-    printf("Temperature: %.1f%c\n", temp, temp_unit);
+    printf("Temperature: %.1f°%c\n", temp, temp_unit);
   }
 
   result = nvmlDeviceGetMemoryInfo(device, &memory);
@@ -389,7 +389,7 @@ static void print_status_cli(nvmlDevice_t device, int device_id, char temp_unit)
   nvmlDeviceGetPowerUsage(device, &power_usage);
 
   double temp = convert_temperature(temperature, temp_unit);
-  printf("%d:%.1f%c,%u%%,%.1fW\n", device_id, temp, temp_unit, fan_speed, power_usage / 1000.0);
+  printf("%d:%.1f°%c,%u%%,%.1fW\n", device_id, temp, temp_unit, fan_speed, power_usage / 1000.0);
 }
 
 static int parse_args(int argc, char* argv[], cli_args_t* args) {
@@ -723,7 +723,7 @@ int main(int argc, char* argv[]) {
            controlled_device_count);
     printf("Setpoints: ");
     for (int sp = 0; sp < args.setpoint_count; sp++) {
-      printf("%u:%u%%", args.setpoints[sp].temp, args.setpoints[sp].fan);
+      printf("%u°%c:%u%%", args.setpoints[sp].temp, args.temp_unit, args.setpoints[sp].fan);
       if (sp < args.setpoint_count - 1) printf(" ");
     }
     printf("\n");
@@ -769,7 +769,7 @@ int main(int argc, char* argv[]) {
 
         if (fan_errors == 0) {
           double temp_display = convert_temperature(current_temp, args.temp_unit);
-          printf("%d:%.1f%c -> %u%%\n", device_id, temp_display, args.temp_unit, target_fan);
+          printf("%d:%.1f°%c -> %u%%\n", device_id, temp_display, args.temp_unit, target_fan);
         } else {
           running = 0;
           break;
