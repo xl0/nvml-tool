@@ -1,5 +1,4 @@
 #define _GNU_SOURCE
-#include <ctype.h>
 #include <getopt.h>
 #include <nvml.h>
 #include <signal.h>
@@ -71,9 +70,8 @@ static void signal_handler(int signum) {
   }
 
   // For crash signals, we must exit to avoid infinite signal loop
-  if (signum == SIGSEGV || signum == SIGBUS || signum == SIGFPE || signum == SIGILL) {
-    _exit(128 + signum);  // _exit is async-signal-safe, exit() is not
-  }
+  if (signum == SIGSEGV || signum == SIGBUS || signum == SIGFPE || signum == SIGILL)
+    _exit(128 + signum); // _exit is async-signal-safe, exit() is not
 }
 
 static void sigtstp_handler(int signum) {
@@ -105,7 +103,18 @@ static void sigcont_handler(int signum) {
   ssize_t unused __attribute__((unused)) = write(STDOUT_FILENO, msg, sizeof(msg) - 1);
 
   // Re-register SIGTSTP handler for next Ctrl+Z
+  // Note: Fan speeds will be set on the next loop iteration (up to 2s delay)
   signal(SIGTSTP, sigtstp_handler);
+}
+
+// Parse string to long with validation. Returns 0 on success, -1 on error.
+static int parse_long(const char* str, long* out, long min, long max) {
+  char* endptr;
+  long val = strtol(str, &endptr, 10);
+  if (endptr == str || *endptr != '\0') return -1; // No digits or trailing garbage
+  if (val < min || val > max) return -1;
+  *out = val;
+  return 0;
 }
 
 static int parse_setpoints(int argc, char* argv[], int start_idx, setpoint_t* setpoints,
@@ -119,17 +128,18 @@ static int parse_setpoints(int argc, char* argv[], int start_idx, setpoint_t* se
     if (!colon) continue;
 
     *colon = '\0';
-    unsigned int temp = atoi(argv[i]);
-    unsigned int fan = atoi(colon + 1);
-    *colon = ':'; // Restore for error messages
+    long temp, fan;
+    int temp_ok = parse_long(argv[i], &temp, 1, 150); // 1-150°C reasonable GPU temp range
+    int fan_ok = parse_long(colon + 1, &fan, 0, 100); // 0-100%
+    *colon = ':';                                     // Restore for error messages
 
-    if (temp == 0 || fan > 100) {
-      fprintf(stderr, "Error: Invalid setpoint '%s' (temp must be >0, fan 0-100%%)\n", argv[i]);
+    if (temp_ok != 0 || fan_ok != 0) {
+      fprintf(stderr, "Error: Invalid setpoint '%s' (temp 1-150, fan 0-100%%)\n", argv[i]);
       return -1;
     }
 
-    setpoints[count].temp = temp;
-    setpoints[count].fan = fan;
+    setpoints[count].temp = (unsigned int)temp;
+    setpoints[count].fan = (unsigned int)fan;
     count++;
   }
 
@@ -138,13 +148,13 @@ static int parse_setpoints(int argc, char* argv[], int start_idx, setpoint_t* se
     return -1;
   }
 
-  // Sort setpoints by temperature
+  // Sort setpoints by temperature (allows input in any order)
   for (int i = 0; i < count - 1; i++) {
     for (int j = i + 1; j < count; j++) {
       if (setpoints[i].temp > setpoints[j].temp) {
-        setpoint_t temp_sp = setpoints[i];
+        setpoint_t tmp = setpoints[i];
         setpoints[i] = setpoints[j];
-        setpoints[j] = temp_sp;
+        setpoints[j] = tmp;
       }
     }
   }
@@ -162,14 +172,14 @@ static unsigned int interpolate_fan_speed(unsigned int current_temp, const setpo
   // Above last setpoint
   if (current_temp >= setpoints[count - 1].temp) return setpoints[count - 1].fan;
 
-  // Find surrounding setpoints and interpolate
+  // Find surrounding setpoints and interpolate (signed math to handle decreasing fan curves)
   for (int i = 0; i < count - 1; i++) {
     if (current_temp >= setpoints[i].temp && current_temp <= setpoints[i + 1].temp) {
-      unsigned int temp_range = setpoints[i + 1].temp - setpoints[i].temp;
-      unsigned int fan_range = setpoints[i + 1].fan - setpoints[i].fan;
-      unsigned int temp_offset = current_temp - setpoints[i].temp;
+      int temp_range = (int)setpoints[i + 1].temp - (int)setpoints[i].temp;
+      int fan_range = (int)setpoints[i + 1].fan - (int)setpoints[i].fan;
+      int temp_offset = (int)current_temp - (int)setpoints[i].temp;
 
-      return setpoints[i].fan + (fan_range * temp_offset) / temp_range;
+      return (unsigned int)((int)setpoints[i].fan + (fan_range * temp_offset) / temp_range);
     }
   }
 
@@ -224,6 +234,8 @@ static double convert_temperature(unsigned int temp_c, char unit) {
 
 static int parse_device_range(const char* range_str, int* devices, int max_devices) {
   char* str = strdup(range_str);
+  if (!str) return 0;
+
   char* token = strtok(str, ",");
   int count = 0;
 
@@ -231,11 +243,14 @@ static int parse_device_range(const char* range_str, int* devices, int max_devic
     char* dash = strchr(token, '-');
     if (dash) {
       *dash = '\0';
-      int start = atoi(token);
-      int end = atoi(dash + 1);
-      for (int i = start; i <= end && count < max_devices; i++) devices[count++] = i;
+      long start, end;
+      if (parse_long(token, &start, 0, MAX_DEVICES - 1) == 0 &&
+          parse_long(dash + 1, &end, 0, MAX_DEVICES - 1) == 0 && start <= end) {
+        for (long i = start; i <= end && count < max_devices; i++) devices[count++] = (int)i;
+      }
     } else {
-      devices[count++] = atoi(token);
+      long dev;
+      if (parse_long(token, &dev, 0, MAX_DEVICES - 1) == 0) devices[count++] = (int)dev;
     }
     token = strtok(NULL, ",");
   }
@@ -685,10 +700,10 @@ int main(int argc, char* argv[]) {
   // Handle fanctl main loop
   if (args.command == CMD_FANCTL && controlled_device_count > 0 && error_count == 0) {
     // Set up signal handlers for graceful termination
-    signal(SIGINT, signal_handler);   // Ctrl+C
-    signal(SIGTERM, signal_handler);  // kill command
-    signal(SIGHUP, signal_handler);   // Terminal hangup (SSH disconnect)
-    signal(SIGQUIT, signal_handler);  // Ctrl+backslash
+    signal(SIGINT, signal_handler);  // Ctrl+C
+    signal(SIGTERM, signal_handler); // kill command
+    signal(SIGHUP, signal_handler);  // Terminal hangup (SSH disconnect)
+    signal(SIGQUIT, signal_handler); // Ctrl+backslash
 
     // Suspend/resume handling - restore auto on suspend, resume manual on continue
     signal(SIGTSTP, sigtstp_handler); // Ctrl+Z
@@ -696,10 +711,10 @@ int main(int argc, char* argv[]) {
 
     // Best-effort cleanup on crash - program state is undefined but
     // restoring fan control is critical to prevent GPU overheating
-    signal(SIGSEGV, signal_handler);  // Segmentation fault
-    signal(SIGBUS, signal_handler);   // Bus error
-    signal(SIGFPE, signal_handler);   // Floating point exception
-    signal(SIGILL, signal_handler);   // Illegal instruction
+    signal(SIGSEGV, signal_handler); // Segmentation fault
+    signal(SIGBUS, signal_handler);  // Bus error
+    signal(SIGFPE, signal_handler);  // Floating point exception
+    signal(SIGILL, signal_handler);  // Illegal instruction
 
     // Check if stdout is a terminal
     is_terminal = isatty(STDOUT_FILENO);
