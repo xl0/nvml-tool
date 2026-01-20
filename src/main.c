@@ -721,9 +721,9 @@ int main(int argc, char* argv[]) {
 
     printf("Starting dynamic fan control for %d device(s) (Ctrl-C to exit)\n",
            controlled_device_count);
-    printf("Setpoints: ");
+    printf("Setpoints (input always °C): ");
     for (int sp = 0; sp < args.setpoint_count; sp++) {
-      printf("%u°%c:%u%%", args.setpoints[sp].temp, args.temp_unit, args.setpoints[sp].fan);
+      printf("%u°C:%u%%", args.setpoints[sp].temp, args.setpoints[sp].fan);
       if (sp < args.setpoint_count - 1) printf(" ");
     }
     printf("\n");
